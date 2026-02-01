@@ -98,7 +98,7 @@ impl Emulator {
 
         let bus = Bus::new();
 
-        Ok(Self {
+        let mut emu = Self {
             ctx: EmulatorContext::default(),
             cpu,
             ppu,
@@ -109,7 +109,12 @@ impl Emulator {
             cart,
             gamepad,
             bus,
-        })
+        };
+
+        // Load ROM into bus
+        emu.bus.load_rom(&emu.cart.rom);
+
+        Ok(emu)
     }
 
     /// Run one CPU instruction and tick all components
@@ -153,6 +158,10 @@ impl Emulator {
 
     /// Tick all components by the given number of T-cycles
     fn tick_components(&mut self, cycles: u32) {
+        // Sync VRAM/OAM from Bus to PPU before ticking
+        self.ppu.vram.copy_from_slice(&self.bus.vram);
+        self.ppu.oam.copy_from_slice(&self.bus.oam);
+
         for _ in 0..cycles {
             self.ctx.ticks += 1;
 
@@ -177,7 +186,7 @@ impl Emulator {
             // Tick DMA
             if let Some((src, dst)) = self.dma.tick() {
                 let value = self.bus.read(src);
-                self.ppu.oam_write(dst, value);
+                self.bus.oam[(dst - 0xFE00) as usize] = value;
             }
 
             // Tick APU

@@ -121,7 +121,7 @@ pub struct Cartridge {
     /// ROM file path
     filename: String,
     /// ROM data
-    rom_data: Vec<Byte>,
+    pub rom: Vec<Byte>,
     /// Parsed ROM header
     pub header: RomHeader,
     /// RAM enabled flag (for MBC)
@@ -146,13 +146,13 @@ impl Cartridge {
         let path = path.as_ref();
         let filename = path.to_string_lossy().to_string();
         
-        let rom_data = fs::read(path)?;
+        let rom = fs::read(path)?;
         
-        let header = RomHeader::parse(&rom_data)
+        let header = RomHeader::parse(&rom)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Invalid ROM header"))?;
         
         // Validate checksum
-        if !Self::validate_checksum(&rom_data) {
+        if !Self::validate_checksum(&rom) {
             eprintln!("Warning: ROM header checksum invalid");
         }
         
@@ -161,7 +161,7 @@ impl Cartridge {
         
         let mut cart = Self {
             filename: filename.clone(),
-            rom_data,
+            rom,
             header,
             ram_enabled: false,
             rom_bank: 1,
@@ -216,9 +216,9 @@ impl Cartridge {
                     // In RAM banking mode, bank 0 can be 0x00, 0x20, 0x40, or 0x60
                     let bank = (self.ram_bank as usize) << 5;
                     let addr = (bank * 0x4000) + (address as usize);
-                    self.rom_data.get(addr).copied().unwrap_or(0xFF)
+                    self.rom.get(addr).copied().unwrap_or(0xFF)
                 } else {
-                    self.rom_data.get(address as usize).copied().unwrap_or(0xFF)
+                    self.rom.get(address as usize).copied().unwrap_or(0xFF)
                 }
             }
             // ROM Bank 1-N (0x4000-0x7FFF)
@@ -234,7 +234,7 @@ impl Cartridge {
                 };
                 
                 let addr = (bank * 0x4000) + ((address as usize) - 0x4000);
-                self.rom_data.get(addr).copied().unwrap_or(0xFF)
+                self.rom.get(addr).copied().unwrap_or(0xFF)
             }
             // Cartridge RAM (0xA000-0xBFFF)
             0xA000..=0xBFFF => {

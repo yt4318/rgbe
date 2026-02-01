@@ -50,19 +50,18 @@ pub struct Bus {
     pub ie_register: Byte,
     /// Interrupt flags register (0xFF0F)
     pub int_flags: Byte,
-    // Stub arrays for components not yet implemented
-    /// Cartridge ROM (stub - will be replaced with Cartridge)
-    cart_rom: Vec<Byte>,
-    /// Cartridge RAM (stub)
-    cart_ram: Vec<Byte>,
-    /// VRAM (stub - will be replaced with PPU)
-    vram: [Byte; 0x2000],
-    /// OAM (stub - will be replaced with PPU)
-    oam: [Byte; 0xA0],
-    /// I/O registers (stub)
-    io_regs: [Byte; 0x80],
+    /// Cartridge ROM
+    pub cart_rom: Vec<Byte>,
+    /// Cartridge RAM
+    pub cart_ram: Vec<Byte>,
+    /// VRAM (shared with PPU)
+    pub vram: [Byte; 0x2000],
+    /// OAM (shared with PPU)
+    pub oam: [Byte; 0xA0],
+    /// I/O registers
+    pub io_regs: [Byte; 0x80],
     /// DMA transferring flag
-    dma_active: bool,
+    pub dma_active: bool,
 }
 
 impl Default for Bus {
