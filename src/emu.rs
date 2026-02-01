@@ -166,8 +166,15 @@ impl Emulator {
         }
 
         // Fetch instruction
+        let pc_before = self.cpu.regs.pc;
         self.cpu.fetch_instruction(&self.bus);
         self.cpu.fetch_data(&self.bus);
+
+        // Debug output for first 20 instructions
+        if self.ctx.ticks < 100 {
+            println!("PC:{:04X} OP:{:02X} {:?}", pc_before, self.cpu.cur_opcode, 
+                self.cpu.current_instruction().map(|i| i.inst_type));
+        }
 
         // Execute instruction
         self.cpu.execute(&mut self.bus);

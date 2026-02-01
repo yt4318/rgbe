@@ -79,7 +79,7 @@ impl Lcd {
     pub fn new() -> Self {
         Self {
             lcdc: 0x91, // LCD enabled, BG enabled
-            stat: 0x00,
+            stat: 0x02, // Start in OAM scan mode (mode 2)
             scy: 0,
             scx: 0,
             ly: 0,
@@ -96,7 +96,7 @@ impl Lcd {
     /// Initialize LCD to boot ROM skip state
     pub fn init(&mut self) {
         self.lcdc = 0x91;
-        self.stat = 0x00;
+        self.stat = 0x02; // Start in OAM scan mode (mode 2)
         self.scy = 0;
         self.scx = 0;
         self.ly = 0;
