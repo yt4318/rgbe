@@ -2,6 +2,16 @@
 
 A Game Boy emulator written in Rust.
 
+## Features
+
+- CPU (all instructions)
+- PPU (graphics processing)
+- APU (audio processing)
+- Timer
+- Cartridge loading (MBC1, MBC3, etc.)
+- Gamepad input handling
+- SDL2 window and rendering
+
 ## Requirements
 
 - Rust (1.70+)
@@ -11,12 +21,12 @@ A Game Boy emulator written in Rust.
 
 **Ubuntu/Debian:**
 ```bash
-sudo apt install libsdl2-dev libsdl2-ttf-dev
+sudo apt install libsdl2-dev
 ```
 
 **macOS:**
 ```bash
-brew install sdl2 sdl2_ttf
+brew install sdl2
 ```
 
 **Windows:**
@@ -33,13 +43,13 @@ cd rgbe
 cargo build --release
 
 # Run
-./target/release/rgbe <rom_file>
+./target/release/gbemu-rust <rom_file>
 ```
 
 ## Usage Example
 
 ```bash
-./target/release/rgbe ~/roms/game.gb
+./target/release/gbemu-rust ~/roms/game.gb
 ```
 
 ## Controls
@@ -51,6 +61,7 @@ cargo build --release
 | X | B Button |
 | Enter | Start |
 | Backspace | Select |
+| Escape | Quit |
 
 ## License
 
