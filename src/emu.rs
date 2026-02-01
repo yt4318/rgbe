@@ -170,10 +170,28 @@ impl Emulator {
         self.cpu.fetch_instruction(&self.bus);
         self.cpu.fetch_data(&self.bus);
 
-        // Debug output for first 20 instructions
-        if self.ctx.ticks < 100 {
-            println!("PC:{:04X} OP:{:02X} {:?}", pc_before, self.cpu.cur_opcode, 
-                self.cpu.current_instruction().map(|i| i.inst_type));
+        // Debug output for first 500 instructions or when stuck
+        static mut LAST_PC: u16 = 0;
+        static mut STUCK_COUNT: u32 = 0;
+        unsafe {
+            if pc_before == LAST_PC {
+                STUCK_COUNT += 1;
+                if STUCK_COUNT > 10 {
+                    println!("STUCK at PC:{:04X} OP:{:02X} {:?} A:{:02X} F:{:02X} BC:{:04X} DE:{:04X} HL:{:04X} SP:{:04X}", 
+                        pc_before, self.cpu.cur_opcode, 
+                        self.cpu.current_instruction().map(|i| i.inst_type),
+                        self.cpu.regs.a, self.cpu.regs.f,
+                        self.cpu.regs.bc(), self.cpu.regs.de(), self.cpu.regs.hl(), self.cpu.regs.sp);
+                    println!("  LCDC:{:02X} STAT:{:02X} LY:{:02X} IE:{:02X} IF:{:02X} IME:{} HALT:{}",
+                        self.lcd.lcdc, self.lcd.stat, self.lcd.ly,
+                        self.cpu.ie_register, self.cpu.int_flags,
+                        self.cpu.ime, self.cpu.halted);
+                    STUCK_COUNT = 0;
+                }
+            } else {
+                STUCK_COUNT = 0;
+            }
+            LAST_PC = pc_before;
         }
 
         // Execute instruction
