@@ -72,6 +72,9 @@ impl Ui {
             .map_err(|e| e.to_string())?;
 
         let frame_duration = Duration::from_secs_f64(1.0 / 60.0);
+        
+        // Cycles per frame: ~70224 T-cycles (456 * 154)
+        const CYCLES_PER_FRAME: u32 = 70224;
 
         'running: loop {
             let frame_start = Instant::now();
@@ -97,8 +100,13 @@ impl Ui {
                 }
             }
 
-            // Run one frame of emulation
-            emulator.run_frame();
+            // Run emulation for one frame worth of cycles
+            let start_ticks = emulator.ctx.ticks;
+            while emulator.ctx.ticks - start_ticks < CYCLES_PER_FRAME as u64 {
+                if !emulator.step() {
+                    break 'running;
+                }
+            }
 
             // Update texture with video buffer
             let video_buffer = emulator.get_video_buffer();
