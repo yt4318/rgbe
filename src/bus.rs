@@ -27,6 +27,7 @@ pub trait MemoryBus {
     }
 }
 
+use crate::cart::Cartridge;
 use crate::ram::Ram;
 
 /// Game Boy memory bus
@@ -42,7 +43,6 @@ use crate::ram::Ram;
 /// - 0xFF00-0xFF7F: I/O registers
 /// - 0xFF80-0xFFFE: HRAM
 /// - 0xFFFF: IE register
-#[derive(Debug)]
 pub struct Bus {
     /// RAM (WRAM + HRAM)
     pub ram: Ram,
@@ -50,10 +50,8 @@ pub struct Bus {
     pub ie_register: Byte,
     /// Interrupt flags register (0xFF0F)
     pub int_flags: Byte,
-    /// Cartridge ROM
-    pub cart_rom: Vec<Byte>,
-    /// Cartridge RAM
-    pub cart_ram: Vec<Byte>,
+    /// Cartridge (handles MBC)
+    pub cart: Option<Cartridge>,
     /// VRAM (shared with PPU)
     pub vram: [Byte; 0x2000],
     /// OAM (shared with PPU)
@@ -77,8 +75,7 @@ impl Bus {
             ram: Ram::new(),
             ie_register: 0,
             int_flags: 0,
-            cart_rom: vec![0; 0x8000],
-            cart_ram: vec![0; 0x2000],
+            cart: None,
             vram: [0; 0x2000],
             oam: [0; 0xA0],
             io_regs: [0; 0x80],
@@ -86,10 +83,9 @@ impl Bus {
         }
     }
 
-    /// Load ROM data into cartridge ROM
-    pub fn load_rom(&mut self, data: &[Byte]) {
-        let len = data.len().min(self.cart_rom.len());
-        self.cart_rom[..len].copy_from_slice(&data[..len]);
+    /// Load cartridge into bus
+    pub fn load_cartridge(&mut self, cart: Cartridge) {
+        self.cart = Some(cart);
     }
 
     /// Set DMA active state
@@ -101,6 +97,13 @@ impl Bus {
     pub fn is_dma_active(&self) -> bool {
         self.dma_active
     }
+
+    /// Save cartridge battery (if applicable)
+    pub fn save_battery(&mut self) {
+        if let Some(ref mut cart) = self.cart {
+            let _ = cart.save_battery();
+        }
+    }
 }
 
 impl MemoryBus for Bus {
@@ -108,7 +111,11 @@ impl MemoryBus for Bus {
         match address {
             // Cartridge ROM (0x0000-0x7FFF)
             0x0000..=0x7FFF => {
-                self.cart_rom.get(address as usize).copied().unwrap_or(0xFF)
+                if let Some(ref cart) = self.cart {
+                    cart.read(address)
+                } else {
+                    0xFF
+                }
             }
             // VRAM (0x8000-0x9FFF)
             0x8000..=0x9FFF => {
@@ -116,14 +123,20 @@ impl MemoryBus for Bus {
             }
             // Cartridge RAM (0xA000-0xBFFF)
             0xA000..=0xBFFF => {
-                self.cart_ram.get((address - 0xA000) as usize).copied().unwrap_or(0xFF)
+                if let Some(ref cart) = self.cart {
+                    cart.read(address)
+                } else {
+                    0xFF
+                }
             }
             // WRAM (0xC000-0xDFFF)
             0xC000..=0xDFFF => {
                 self.ram.wram_read(address)
             }
-            // Echo RAM (0xE000-0xFDFF) - returns 0
-            0xE000..=0xFDFF => 0,
+            // Echo RAM (0xE000-0xFDFF) - mirror of WRAM
+            0xE000..=0xFDFF => {
+                self.ram.wram_read(address - 0x2000)
+            }
             // OAM (0xFE00-0xFE9F)
             0xFE00..=0xFE9F => {
                 if self.dma_active {
@@ -133,12 +146,12 @@ impl MemoryBus for Bus {
                 }
             }
             // Unusable (0xFEA0-0xFEFF)
-            0xFEA0..=0xFEFF => 0,
+            0xFEA0..=0xFEFF => 0xFF,
             // I/O registers (0xFF00-0xFF7F)
             0xFF00..=0xFF7F => {
                 // Special case for IF register
                 if address == 0xFF0F {
-                    self.int_flags
+                    self.int_flags | 0xE0
                 } else {
                     self.io_regs[(address - 0xFF00) as usize]
                 }
@@ -156,7 +169,9 @@ impl MemoryBus for Bus {
         match address {
             // Cartridge ROM (0x0000-0x7FFF) - writes go to MBC
             0x0000..=0x7FFF => {
-                // MBC handling will be implemented later
+                if let Some(ref mut cart) = self.cart {
+                    cart.write(address, value);
+                }
             }
             // VRAM (0x8000-0x9FFF)
             0x8000..=0x9FFF => {
@@ -164,16 +179,18 @@ impl MemoryBus for Bus {
             }
             // Cartridge RAM (0xA000-0xBFFF)
             0xA000..=0xBFFF => {
-                if let Some(slot) = self.cart_ram.get_mut((address - 0xA000) as usize) {
-                    *slot = value;
+                if let Some(ref mut cart) = self.cart {
+                    cart.write(address, value);
                 }
             }
             // WRAM (0xC000-0xDFFF)
             0xC000..=0xDFFF => {
                 self.ram.wram_write(address, value);
             }
-            // Echo RAM (0xE000-0xFDFF) - ignored
-            0xE000..=0xFDFF => {}
+            // Echo RAM (0xE000-0xFDFF) - mirror of WRAM
+            0xE000..=0xFDFF => {
+                self.ram.wram_write(address - 0x2000, value);
+            }
             // OAM (0xFE00-0xFE9F)
             0xFE00..=0xFE9F => {
                 if !self.dma_active {
@@ -243,7 +260,7 @@ mod tests {
         let mut bus = Bus::new();
         
         bus.write(0xFF0F, 0x05);
-        assert_eq!(bus.read(0xFF0F), 0x05);
+        assert_eq!(bus.read(0xFF0F) & 0x1F, 0x05);
         assert_eq!(bus.int_flags, 0x05);
     }
 
@@ -275,16 +292,17 @@ mod tests {
 
     #[test]
     fn test_echo_ram() {
-        let bus = Bus::new();
-        assert_eq!(bus.read(0xE000), 0);
-        assert_eq!(bus.read(0xFDFF), 0);
+        let mut bus = Bus::new();
+        // Echo RAM mirrors WRAM
+        bus.write(0xC000, 0x42);
+        assert_eq!(bus.read(0xE000), 0x42);
     }
 
     #[test]
     fn test_unusable_area() {
         let bus = Bus::new();
-        assert_eq!(bus.read(0xFEA0), 0);
-        assert_eq!(bus.read(0xFEFF), 0);
+        assert_eq!(bus.read(0xFEA0), 0xFF);
+        assert_eq!(bus.read(0xFEFF), 0xFF);
     }
 
     #[test]
