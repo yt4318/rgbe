@@ -420,6 +420,10 @@ impl Emulator {
         while self.ppu.current_frame == start_frame && !self.ctx.die {
             self.step();
         }
+        
+        // Debug: print frame info
+        println!("Frame {} complete, LY:{}, LCDC:{:02X}, ticks:{}", 
+            self.ppu.current_frame, self.lcd.ly, self.lcd.lcdc, self.ctx.ticks);
     }
 
     /// Pause the emulator
