@@ -1,0 +1,20 @@
+[package]
+name = "gbemu-rust"
+version = "0.1.0"
+edition = "2021"
+description = "Game Boy emulator written in Rust"
+authors = ["Developer"]
+
+[lib]
+name = "gbemu"
+path = "src/lib.rs"
+
+[[bin]]
+name = "gbemu-rust"
+path = "src/main.rs"
+
+[dependencies]
+sdl2 = "0.36"
+
+[dev-dependencies]
+proptest = "1.4"
