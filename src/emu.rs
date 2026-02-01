@@ -97,6 +97,13 @@ impl Emulator {
         let mut bus = Bus::new();
         bus.load_cartridge(cart);
 
+        // Initialize I/O registers to boot ROM skip values
+        bus.io_regs[0x40] = lcd.lcdc;  // LCDC
+        bus.io_regs[0x41] = lcd.stat;  // STAT
+        bus.io_regs[0x47] = lcd.bgp;   // BGP
+        bus.io_regs[0x48] = lcd.obp0;  // OBP0
+        bus.io_regs[0x49] = lcd.obp1;  // OBP1
+
         Ok(Self {
             ctx: EmulatorContext::default(),
             cpu,

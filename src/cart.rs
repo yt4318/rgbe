@@ -242,7 +242,15 @@ impl Cartridge {
                     return 0xFF;
                 }
                 
-                let bank = if self.banking_mode == 1 { self.ram_bank as usize } else { 0 };
+                // MBC3: RAM bank 0-3 (RTC registers 0x08-0x0C not implemented)
+                // MBC1: RAM bank depends on banking_mode
+                let bank = if self.is_mbc3() {
+                    (self.ram_bank & 0x03) as usize
+                } else if self.banking_mode == 1 {
+                    self.ram_bank as usize
+                } else {
+                    0
+                };
                 let addr = (bank * 0x2000) + ((address as usize) - 0xA000);
                 self.ram.get(addr).copied().unwrap_or(0xFF)
             }
@@ -304,7 +312,15 @@ impl Cartridge {
                     return;
                 }
                 
-                let bank = if self.banking_mode == 1 { self.ram_bank as usize } else { 0 };
+                // MBC3: RAM bank 0-3 (RTC registers 0x08-0x0C not implemented)
+                // MBC1: RAM bank depends on banking_mode
+                let bank = if self.is_mbc3() {
+                    (self.ram_bank & 0x03) as usize
+                } else if self.banking_mode == 1 {
+                    self.ram_bank as usize
+                } else {
+                    0
+                };
                 let addr = (bank * 0x2000) + ((address as usize) - 0xA000);
                 
                 if addr < self.ram.len() {
