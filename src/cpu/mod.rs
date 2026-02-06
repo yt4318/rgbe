@@ -36,6 +36,8 @@ pub struct Cpu {
     pub cur_opcode: Byte,
     /// Current instruction reference
     cur_inst: Option<&'static instructions::Instruction>,
+    /// M-cycles consumed by the current step
+    pending_m_cycles: u32,
 }
 
 impl Default for Cpu {
@@ -59,6 +61,7 @@ impl Cpu {
             dest_is_mem: false,
             cur_opcode: 0,
             cur_inst: None,
+            pending_m_cycles: 0,
         }
     }
 
@@ -80,6 +83,7 @@ impl Cpu {
         self.enabling_ime = false;
         self.ie_register = 0;
         self.int_flags = 0;
+        self.pending_m_cycles = 0;
     }
 
     /// Get the current instruction being executed
@@ -90,6 +94,23 @@ impl Cpu {
     /// Set the current instruction
     pub fn set_current_instruction(&mut self, inst: Option<&'static instructions::Instruction>) {
         self.cur_inst = inst;
+    }
+
+    /// Reset M-cycle accounting for a new CPU step
+    pub fn reset_step_cycles(&mut self) {
+        self.pending_m_cycles = 0;
+    }
+
+    /// Add consumed M-cycles
+    pub fn add_m_cycles(&mut self, cycles: u32) {
+        self.pending_m_cycles = self.pending_m_cycles.saturating_add(cycles);
+    }
+
+    /// Consume and return pending T-cycles (M-cycles * 4)
+    pub fn take_t_cycles(&mut self) -> u32 {
+        let t_cycles = self.pending_m_cycles.saturating_mul(4);
+        self.pending_m_cycles = 0;
+        t_cycles
     }
 
     /// Request an interrupt

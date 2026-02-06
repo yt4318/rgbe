@@ -56,6 +56,7 @@ impl Cpu {
     pub fn fetch_instruction<B: MemoryBus>(&mut self, bus: &B) -> &'static Instruction {
         self.cur_opcode = bus.read(self.regs.pc);
         self.regs.pc = self.regs.pc.wrapping_add(1);
+        self.add_m_cycles(1);
         let inst = instruction_by_opcode(self.cur_opcode);
         self.set_current_instruction(Some(inst));
         inst
@@ -85,6 +86,7 @@ impl Cpu {
             AddressingMode::RegisterD8 | AddressingMode::D8 => {
                 self.fetched_data = bus.read(self.regs.pc) as Word;
                 self.regs.pc = self.regs.pc.wrapping_add(1);
+                self.add_m_cycles(1);
             }
 
             AddressingMode::RegisterD16 | AddressingMode::D16 => {
@@ -92,6 +94,7 @@ impl Cpu {
                 let hi = bus.read(self.regs.pc.wrapping_add(1)) as Word;
                 self.fetched_data = lo | (hi << 8);
                 self.regs.pc = self.regs.pc.wrapping_add(2);
+                self.add_m_cycles(2);
             }
 
             AddressingMode::MemoryRegister => {
@@ -109,18 +112,21 @@ impl Cpu {
                     addr |= 0xFF00;
                 }
                 self.fetched_data = bus.read(addr) as Word;
+                self.add_m_cycles(1);
             }
 
             AddressingMode::RegisterHli => {
                 self.fetched_data = bus.read(self.read_reg(inst.reg2)) as Word;
                 let hl = self.regs.hl().wrapping_add(1);
                 self.regs.set_hl(hl);
+                self.add_m_cycles(1);
             }
 
             AddressingMode::RegisterHld => {
                 self.fetched_data = bus.read(self.read_reg(inst.reg2)) as Word;
                 let hl = self.regs.hl().wrapping_sub(1);
                 self.regs.set_hl(hl);
+                self.add_m_cycles(1);
             }
 
             AddressingMode::HliRegister => {
@@ -142,17 +148,20 @@ impl Cpu {
             AddressingMode::RegisterA8 => {
                 self.fetched_data = bus.read(self.regs.pc) as Word;
                 self.regs.pc = self.regs.pc.wrapping_add(1);
+                self.add_m_cycles(1);
             }
 
             AddressingMode::A8Register => {
                 self.mem_dest = (bus.read(self.regs.pc) as Word) | 0xFF00;
                 self.dest_is_mem = true;
                 self.regs.pc = self.regs.pc.wrapping_add(1);
+                self.add_m_cycles(1);
             }
 
             AddressingMode::HlSpr => {
                 self.fetched_data = bus.read(self.regs.pc) as Word;
                 self.regs.pc = self.regs.pc.wrapping_add(1);
+                self.add_m_cycles(1);
             }
 
             AddressingMode::A16Register => {
@@ -162,6 +171,7 @@ impl Cpu {
                 self.dest_is_mem = true;
                 self.regs.pc = self.regs.pc.wrapping_add(2);
                 self.fetched_data = self.read_reg(inst.reg2);
+                self.add_m_cycles(2);
             }
 
             AddressingMode::MemoryRegisterD8 => {
@@ -169,12 +179,14 @@ impl Cpu {
                 self.regs.pc = self.regs.pc.wrapping_add(1);
                 self.mem_dest = self.read_reg(inst.reg1);
                 self.dest_is_mem = true;
+                self.add_m_cycles(1);
             }
 
             AddressingMode::MemoryRegisterOnly => {
                 self.mem_dest = self.read_reg(inst.reg1);
                 self.dest_is_mem = true;
                 self.fetched_data = bus.read(self.read_reg(inst.reg1)) as Word;
+                self.add_m_cycles(1);
             }
 
             AddressingMode::RegisterA16 => {
@@ -183,6 +195,7 @@ impl Cpu {
                 let addr = lo | (hi << 8);
                 self.regs.pc = self.regs.pc.wrapping_add(2);
                 self.fetched_data = bus.read(addr) as Word;
+                self.add_m_cycles(3);
             }
         }
     }

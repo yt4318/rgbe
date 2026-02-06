@@ -2,6 +2,9 @@
 
 A Game Boy emulator written in Rust.
 
+This project was created 100% with AI using Kiro IDE × Claude Opus 4.5 and GPT-5.3-Codex.
+It was built by refactoring [yt4318/gbemu](https://github.com/yt4318/gbemu).
+
 ## Features
 
 - CPU (all instructions)

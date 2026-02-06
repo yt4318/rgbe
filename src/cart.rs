@@ -141,6 +141,50 @@ pub struct Cartridge {
 }
 
 impl Cartridge {
+    /// Number of 16KB ROM banks available in this cartridge
+    fn rom_bank_count(&self) -> usize {
+        (self.rom.len() / 0x4000).max(1)
+    }
+
+    /// Number of 8KB RAM banks available in this cartridge
+    fn ram_bank_count(&self) -> usize {
+        (self.ram.len() / 0x2000).max(1)
+    }
+
+    /// Resolve effective MBC1 bank for 0x0000-0x3FFF region
+    fn mbc1_rom0_bank(&self) -> usize {
+        if self.banking_mode == 1 {
+            // In mode 1, high bank bits affect bank 0 region on larger ROMs.
+            let bank = ((self.ram_bank as usize) & 0x03) << 5;
+            bank % self.rom_bank_count()
+        } else {
+            0
+        }
+    }
+
+    /// Resolve effective MBC1 bank for 0x4000-0x7FFF region
+    fn mbc1_romx_bank(&self) -> usize {
+        let mut bank = (self.rom_bank as usize) & 0x1F;
+        if self.banking_mode == 0 {
+            bank |= ((self.ram_bank as usize) & 0x03) << 5;
+        }
+
+        // MBC1 cannot select banks where low 5 bits are all zero.
+        if (bank & 0x1F) == 0 {
+            bank = bank.wrapping_add(1);
+        }
+
+        let bank_count = self.rom_bank_count();
+        bank %= bank_count;
+
+        // 0x4000-0x7FFF should never map bank 0.
+        if bank == 0 && bank_count > 1 {
+            1
+        } else {
+            bank
+        }
+    }
+
     /// Load a cartridge from a ROM file
     pub fn load<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let path = path.as_ref();
@@ -212,9 +256,8 @@ impl Cartridge {
         match address {
             // ROM Bank 0 (0x0000-0x3FFF)
             0x0000..=0x3FFF => {
-                if self.banking_mode == 1 && self.is_mbc1() {
-                    // In RAM banking mode, bank 0 can be 0x00, 0x20, 0x40, or 0x60
-                    let bank = (self.ram_bank as usize) << 5;
+                if self.is_mbc1() {
+                    let bank = self.mbc1_rom0_bank();
                     let addr = (bank * 0x4000) + (address as usize);
                     self.rom.get(addr).copied().unwrap_or(0xFF)
                 } else {
@@ -224,13 +267,14 @@ impl Cartridge {
             // ROM Bank 1-N (0x4000-0x7FFF)
             0x4000..=0x7FFF => {
                 let bank = if self.is_mbc1() {
-                    let mut bank = self.rom_bank as usize;
-                    if self.banking_mode == 0 {
-                        bank |= (self.ram_bank as usize) << 5;
+                    self.mbc1_romx_bank()
+                } else {
+                    let bank_count = self.rom_bank_count();
+                    let mut bank = (self.rom_bank as usize) % bank_count;
+                    if bank == 0 && bank_count > 1 {
+                        bank = 1;
                     }
                     bank
-                } else {
-                    self.rom_bank as usize
                 };
                 
                 let addr = (bank * 0x4000) + ((address as usize) - 0x4000);
@@ -251,6 +295,7 @@ impl Cartridge {
                 } else {
                     0
                 };
+                let bank = bank % self.ram_bank_count();
                 let addr = (bank * 0x2000) + ((address as usize) - 0xA000);
                 self.ram.get(addr).copied().unwrap_or(0xFF)
             }
@@ -321,6 +366,7 @@ impl Cartridge {
                 } else {
                     0
                 };
+                let bank = bank % self.ram_bank_count();
                 let addr = (bank * 0x2000) + ((address as usize) - 0xA000);
                 
                 if addr < self.ram.len() {

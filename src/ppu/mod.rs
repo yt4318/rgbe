@@ -227,7 +227,9 @@ impl Ppu {
             self.line_ticks = 0;
             lcd.inc_ly();
 
-            if lcd.ly >= LINES_PER_FRAME {
+            // LY wraps to 0 inside inc_ly() after line 153.
+            // When that wrap happens, VBlank is complete.
+            if lcd.ly == 0 {
                 lcd.set_ly(0);
                 lcd.set_mode(PpuMode::OamScan);
                 self.window_line = 0;
@@ -272,16 +274,20 @@ impl Ppu {
 
         for x in 0..SCREEN_WIDTH {
             let mut color = 0u8;
+            let mut bg_color_id = 0u8;
 
             // Render background
             if lcd.bg_window_enabled() {
-                color = self.get_bg_pixel(lcd, x as u8, ly as u8);
+                let (mapped, raw) = self.get_bg_pixel(lcd, x as u8, ly as u8);
+                color = mapped;
+                bg_color_id = raw;
             }
 
             // Render window
             if lcd.window_enabled() && lcd.bg_window_enabled() {
-                if let Some(win_color) = self.get_window_pixel(lcd, x as u8, ly as u8) {
-                    color = win_color;
+                if let Some((mapped, raw)) = self.get_window_pixel(lcd, x as u8, ly as u8) {
+                    color = mapped;
+                    bg_color_id = raw;
                 }
             }
 
@@ -290,8 +296,8 @@ impl Ppu {
                 if let Some((sprite_color, priority)) = self.get_sprite_pixel(lcd, x as u8, ly as u8) {
                     // Sprite pixel is visible if:
                     // - BG priority is false, OR
-                    // - BG color is 0 (transparent)
-                    if !priority || color == 0 {
+                    // - BG color id is 0 (white/transparent for OBJ priority)
+                    if !priority || bg_color_id == 0 {
                         color = sprite_color;
                     }
                 }
@@ -309,18 +315,19 @@ impl Ppu {
     }
 
     /// Get background pixel color at position
-    fn get_bg_pixel(&self, lcd: &Lcd, x: u8, y: u8) -> u8 {
+    fn get_bg_pixel(&self, lcd: &Lcd, x: u8, y: u8) -> (u8, u8) {
         let scroll_x = lcd.scx.wrapping_add(x);
         let scroll_y = lcd.scy.wrapping_add(y);
 
         let tile_map = lcd.bg_tile_map();
         let tile_data = lcd.bg_tile_data();
 
-        self.get_tile_pixel(tile_map, tile_data, scroll_x, scroll_y, lcd)
+        let color_id = self.get_tile_color_id(tile_map, tile_data, scroll_x, scroll_y);
+        (lcd.bg_color(color_id), color_id)
     }
 
     /// Get window pixel color at position (if visible)
-    fn get_window_pixel(&self, lcd: &Lcd, x: u8, y: u8) -> Option<u8> {
+    fn get_window_pixel(&self, lcd: &Lcd, x: u8, y: u8) -> Option<(u8, u8)> {
         // Window is visible if WX <= 166 and WY <= LY
         if lcd.wx > 166 || lcd.wy > y {
             return None;
@@ -334,11 +341,12 @@ impl Ppu {
         let tile_map = lcd.window_tile_map();
         let tile_data = lcd.bg_tile_data();
 
-        Some(self.get_tile_pixel(tile_map, tile_data, win_x as u8, self.window_line, lcd))
+        let color_id = self.get_tile_color_id(tile_map, tile_data, win_x as u8, self.window_line);
+        Some((lcd.bg_color(color_id), color_id))
     }
 
-    /// Get tile pixel from tile map
-    fn get_tile_pixel(&self, tile_map: u16, tile_data: u16, x: u8, y: u8, lcd: &Lcd) -> u8 {
+    /// Get raw 2-bit tile color id from tile map
+    fn get_tile_color_id(&self, tile_map: u16, tile_data: u16, x: u8, y: u8) -> u8 {
         // Get tile coordinates
         let tile_x = (x / 8) as u16;
         let tile_y = (y / 8) as u16;
@@ -369,8 +377,7 @@ impl Ppu {
         let lo = self.vram[addr];
         let hi = self.vram[addr + 1];
 
-        let color_bit = ((hi >> pixel_x) & 1) << 1 | ((lo >> pixel_x) & 1);
-        lcd.bg_color(color_bit)
+        ((hi >> pixel_x) & 1) << 1 | ((lo >> pixel_x) & 1)
     }
 
     /// Get sprite pixel at position (if any)
@@ -437,12 +444,12 @@ impl Ppu {
 
     /// Convert 2-bit color to ARGB
     fn color_to_argb(&self, color: u8) -> u32 {
-        // Classic Game Boy green palette
+        // Neutral grayscale palette (no green tint)
         match color & 0x03 {
-            0 => 0xFF9BBC0F, // Lightest
-            1 => 0xFF8BAC0F,
-            2 => 0xFF306230,
-            3 => 0xFF0F380F, // Darkest
+            0 => 0xFFFFFFFF, // White
+            1 => 0xFFAAAAAA, // Light gray
+            2 => 0xFF555555, // Dark gray
+            3 => 0xFF000000, // Black
             _ => 0xFF000000,
         }
     }
@@ -511,7 +518,41 @@ mod tests {
     fn test_color_to_argb() {
         let ppu = Ppu::new();
         
-        assert_eq!(ppu.color_to_argb(0), 0xFF9BBC0F);
-        assert_eq!(ppu.color_to_argb(3), 0xFF0F380F);
+        assert_eq!(ppu.color_to_argb(0), 0xFFFFFFFF);
+        assert_eq!(ppu.color_to_argb(3), 0xFF000000);
+    }
+
+    #[test]
+    fn test_sprite_priority_uses_raw_bg_color_id() {
+        let mut ppu = Ppu::new();
+        let mut lcd = Lcd::new();
+
+        // BG enabled + OBJ enabled.
+        lcd.lcdc = 0x93;
+        lcd.ly = 0;
+
+        // Map BG color id 0 to shade 3 to ensure mapped color != raw color id.
+        lcd.bgp = 0x03;
+        // Sprite palette maps color id 1 to shade 1.
+        lcd.obp0 = 0xE4;
+
+        // BG tile 0 remains all-zero (raw color id 0).
+        ppu.vram[0x1800] = 0x00; // Tile map entry at (0,0)
+
+        // Sprite tile 1, first row pixel x=0 => color id 1.
+        let sprite_tile_base = 16usize; // tile 1 * 16
+        ppu.vram[sprite_tile_base] = 0x80; // low plane
+        ppu.vram[sprite_tile_base + 1] = 0x00; // high plane
+
+        // Sprite on top-left with BG-priority flag set.
+        ppu.line_sprites.push(OamEntry {
+            y: 16,
+            x: 8,
+            tile: 1,
+            flags: 0x80,
+        });
+
+        ppu.render_scanline(&lcd);
+        assert_eq!(ppu.video_buffer[0], 0xFFAAAAAA);
     }
 }

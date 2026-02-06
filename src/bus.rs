@@ -58,8 +58,14 @@ pub struct Bus {
     pub oam: [Byte; 0xA0],
     /// I/O registers
     pub io_regs: [Byte; 0x80],
+    /// I/O register write event flags (FF00 offset indexing)
+    pub io_written: [bool; 0x80],
     /// DMA transferring flag
     pub dma_active: bool,
+    /// VRAM was written since last PPU sync
+    pub vram_dirty: bool,
+    /// OAM was written since last PPU sync
+    pub oam_dirty: bool,
 }
 
 impl Default for Bus {
@@ -79,7 +85,10 @@ impl Bus {
             vram: [0; 0x2000],
             oam: [0; 0xA0],
             io_regs: [0; 0x80],
+            io_written: [false; 0x80],
             dma_active: false,
+            vram_dirty: true,
+            oam_dirty: true,
         }
     }
 
@@ -96,6 +105,16 @@ impl Bus {
     /// Check if DMA is active
     pub fn is_dma_active(&self) -> bool {
         self.dma_active
+    }
+
+    /// Consume and clear an I/O register write event flag.
+    pub fn take_io_written(&mut self, reg: usize) -> bool {
+        if reg >= self.io_written.len() {
+            return false;
+        }
+        let written = self.io_written[reg];
+        self.io_written[reg] = false;
+        written
     }
 
     /// Save cartridge battery (if applicable)
@@ -176,6 +195,7 @@ impl MemoryBus for Bus {
             // VRAM (0x8000-0x9FFF)
             0x8000..=0x9FFF => {
                 self.vram[(address - 0x8000) as usize] = value;
+                self.vram_dirty = true;
             }
             // Cartridge RAM (0xA000-0xBFFF)
             0xA000..=0xBFFF => {
@@ -195,18 +215,21 @@ impl MemoryBus for Bus {
             0xFE00..=0xFE9F => {
                 if !self.dma_active {
                     self.oam[(address - 0xFE00) as usize] = value;
+                    self.oam_dirty = true;
                 }
             }
             // Unusable (0xFEA0-0xFEFF) - ignored
             0xFEA0..=0xFEFF => {}
             // I/O registers (0xFF00-0xFF7F)
             0xFF00..=0xFF7F => {
+                let io_index = (address - 0xFF00) as usize;
                 // Special case for IF register
                 if address == 0xFF0F {
                     self.int_flags = value;
                 } else {
-                    self.io_regs[(address - 0xFF00) as usize] = value;
+                    self.io_regs[io_index] = value;
                 }
+                self.io_written[io_index] = true;
             }
             // HRAM (0xFF80-0xFFFE)
             0xFF80..=0xFFFE => {
@@ -313,5 +336,18 @@ mod tests {
         assert_eq!(bus.read(0xC000), 0x34); // Low byte
         assert_eq!(bus.read(0xC001), 0x12); // High byte
         assert_eq!(bus.read16(0xC000), 0x1234);
+    }
+
+    #[test]
+    fn test_io_write_flag_tracks_same_value_writes() {
+        let mut bus = Bus::new();
+
+        bus.write(0xFF46, 0xC0);
+        assert!(bus.take_io_written(0x46));
+        assert!(!bus.take_io_written(0x46));
+
+        // Same value write must still be observable as a new event.
+        bus.write(0xFF46, 0xC0);
+        assert!(bus.take_io_written(0x46));
     }
 }

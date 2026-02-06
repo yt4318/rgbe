@@ -98,6 +98,29 @@ impl Emulator {
         bus.load_cartridge(cart);
 
         // Initialize I/O registers to boot ROM skip values
+        // Sound registers
+        bus.io_regs[0x10] = 0x80;
+        bus.io_regs[0x11] = 0xBF;
+        bus.io_regs[0x12] = 0xF3;
+        bus.io_regs[0x13] = 0xFF;
+        bus.io_regs[0x14] = 0xBF;
+        bus.io_regs[0x16] = 0x3F;
+        bus.io_regs[0x17] = 0x00;
+        bus.io_regs[0x18] = 0xFF;
+        bus.io_regs[0x19] = 0xBF;
+        bus.io_regs[0x1A] = 0x7F;
+        bus.io_regs[0x1B] = 0xFF;
+        bus.io_regs[0x1C] = 0x9F;
+        bus.io_regs[0x1D] = 0xFF;
+        bus.io_regs[0x1E] = 0xBF;
+        bus.io_regs[0x20] = 0xFF;
+        bus.io_regs[0x21] = 0x00;
+        bus.io_regs[0x22] = 0x00;
+        bus.io_regs[0x23] = 0xBF;
+        bus.io_regs[0x24] = 0x77;
+        bus.io_regs[0x25] = 0xF3;
+        bus.io_regs[0x26] = 0xF1;
+
         bus.io_regs[0x40] = lcd.lcdc;  // LCDC
         bus.io_regs[0x41] = lcd.stat;  // STAT
         bus.io_regs[0x47] = lcd.bgp;   // BGP
@@ -123,6 +146,8 @@ impl Emulator {
             return true;
         }
 
+        self.cpu.reset_step_cycles();
+
         // Sync IE/IF registers from Bus to CPU
         self.cpu.ie_register = self.bus.ie_register;
         self.cpu.int_flags = self.bus.int_flags;
@@ -143,7 +168,12 @@ impl Emulator {
         self.check_dma_start();
 
         // Handle interrupts
-        self.cpu.handle_interrupts(&mut self.bus);
+        if self.cpu.handle_interrupts(&mut self.bus) {
+            self.cpu.add_m_cycles(5);
+            let t_cycles = self.cpu.take_t_cycles();
+            self.tick_components(t_cycles);
+            return !self.ctx.die;
+        }
 
         // Sync IF back to Bus after interrupt handling
         self.bus.int_flags = self.cpu.int_flags;
@@ -156,7 +186,9 @@ impl Emulator {
 
         // If halted, just tick components
         if self.cpu.halted {
-            self.tick_components(4);
+            self.cpu.add_m_cycles(1);
+            let t_cycles = self.cpu.take_t_cycles();
+            self.tick_components(t_cycles);
             
             // Check if we should wake from halt
             if self.cpu.interrupts_pending() {
@@ -166,49 +198,32 @@ impl Emulator {
         }
 
         // Fetch instruction
-        let pc_before = self.cpu.regs.pc;
         self.cpu.fetch_instruction(&self.bus);
         self.cpu.fetch_data(&self.bus);
-
-        // Debug output for first 500 instructions or when stuck
-        static mut LAST_PC: u16 = 0;
-        static mut STUCK_COUNT: u32 = 0;
-        unsafe {
-            if pc_before == LAST_PC {
-                STUCK_COUNT += 1;
-                if STUCK_COUNT > 10 {
-                    println!("STUCK at PC:{:04X} OP:{:02X} {:?} A:{:02X} F:{:02X} BC:{:04X} DE:{:04X} HL:{:04X} SP:{:04X}", 
-                        pc_before, self.cpu.cur_opcode, 
-                        self.cpu.current_instruction().map(|i| i.inst_type),
-                        self.cpu.regs.a, self.cpu.regs.f,
-                        self.cpu.regs.bc(), self.cpu.regs.de(), self.cpu.regs.hl(), self.cpu.regs.sp);
-                    println!("  LCDC:{:02X} STAT:{:02X} LY:{:02X} IE:{:02X} IF:{:02X} IME:{} HALT:{}",
-                        self.lcd.lcdc, self.lcd.stat, self.lcd.ly,
-                        self.cpu.ie_register, self.cpu.int_flags,
-                        self.cpu.ime, self.cpu.halted);
-                    STUCK_COUNT = 0;
-                }
-            } else {
-                STUCK_COUNT = 0;
-            }
-            LAST_PC = pc_before;
-        }
 
         // Execute instruction
         self.cpu.execute(&mut self.bus);
 
-        // Sync IE/IF back to Bus after execution
-        self.bus.ie_register = self.cpu.ie_register;
-        self.bus.int_flags = self.cpu.int_flags;
+        // CPU instructions may have written IE/IF through the bus.
+        // Re-sync Bus -> CPU so interrupt state stays coherent.
+        self.cpu.ie_register = self.bus.ie_register;
+        self.cpu.int_flags = self.bus.int_flags;
 
-        // Sync LCD registers back to Bus
-        self.sync_lcd_to_bus();
+        // CPU may have written I/O registers via the bus. Apply those writes to
+        // component state before ticking so effects are visible immediately.
+        self.sync_lcd_from_bus();
+        self.sync_timer_from_bus();
+        self.sync_gamepad_from_bus();
+        self.sync_apu_from_bus();
+        self.check_dma_start();
 
-        // Sync Gamepad register back to Bus
-        self.sync_gamepad_to_bus();
-
-        // Tick components (4 T-cycles per M-cycle, simplified)
-        self.tick_components(4);
+        // Tick components based on consumed CPU cycles
+        let t_cycles = self.cpu.take_t_cycles();
+        if t_cycles == 0 {
+            self.tick_components(4);
+        } else {
+            self.tick_components(t_cycles);
+        }
 
         !self.ctx.die
     }
@@ -262,8 +277,8 @@ impl Emulator {
 
     /// Check and start DMA if requested
     fn check_dma_start(&mut self) {
-        let dma_reg = self.bus.io_regs[0x46];
-        if dma_reg != self.dma.value && !self.dma.active {
+        if self.bus.take_io_written(0x46) {
+            let dma_reg = self.bus.io_regs[0x46];
             self.dma.start(dma_reg);
             self.bus.set_dma_active(true);
         }
@@ -271,65 +286,34 @@ impl Emulator {
 
     /// Sync APU registers from Bus I/O area
     fn sync_apu_from_bus(&mut self) {
-        // Channel 1
-        self.apu.write(0xFF10, self.bus.io_regs[0x10]);
-        self.apu.write(0xFF11, self.bus.io_regs[0x11]);
-        self.apu.write(0xFF12, self.bus.io_regs[0x12]);
-        self.apu.write(0xFF13, self.bus.io_regs[0x13]);
-        self.apu.write(0xFF14, self.bus.io_regs[0x14]);
-        // Channel 2
-        self.apu.write(0xFF16, self.bus.io_regs[0x16]);
-        self.apu.write(0xFF17, self.bus.io_regs[0x17]);
-        self.apu.write(0xFF18, self.bus.io_regs[0x18]);
-        self.apu.write(0xFF19, self.bus.io_regs[0x19]);
-        // Channel 3
-        self.apu.write(0xFF1A, self.bus.io_regs[0x1A]);
-        self.apu.write(0xFF1B, self.bus.io_regs[0x1B]);
-        self.apu.write(0xFF1C, self.bus.io_regs[0x1C]);
-        self.apu.write(0xFF1D, self.bus.io_regs[0x1D]);
-        self.apu.write(0xFF1E, self.bus.io_regs[0x1E]);
-        // Channel 4
-        self.apu.write(0xFF20, self.bus.io_regs[0x20]);
-        self.apu.write(0xFF21, self.bus.io_regs[0x21]);
-        self.apu.write(0xFF22, self.bus.io_regs[0x22]);
-        self.apu.write(0xFF23, self.bus.io_regs[0x23]);
-        // Master registers
-        self.apu.write(0xFF24, self.bus.io_regs[0x24]);
-        self.apu.write(0xFF25, self.bus.io_regs[0x25]);
-        self.apu.write(0xFF26, self.bus.io_regs[0x26]);
+        const APU_IO_REGS: [usize; 21] = [
+            0x10, 0x11, 0x12, 0x13, 0x14, // CH1
+            0x16, 0x17, 0x18, 0x19, // CH2
+            0x1A, 0x1B, 0x1C, 0x1D, 0x1E, // CH3
+            0x20, 0x21, 0x22, 0x23, // CH4
+            0x24, 0x25, 0x26, // Master
+        ];
+
+        for &reg in &APU_IO_REGS {
+            if self.bus.take_io_written(reg) {
+                let value = self.bus.io_regs[reg];
+                self.apu.write(0xFF00 + reg as u16, value);
+            }
+        }
+
         // Wave RAM (0xFF30-0xFF3F)
-        for i in 0..16 {
-            self.apu.write(0xFF30 + i, self.bus.io_regs[0x30 + i as usize]);
+        for reg in 0x30..=0x3F {
+            if self.bus.take_io_written(reg) {
+                let value = self.bus.io_regs[reg];
+                self.apu.write(0xFF00 + reg as u16, value);
+            }
         }
     }
 
     /// Sync APU registers to Bus I/O area
     fn sync_apu_to_bus(&mut self) {
-        // Channel 1
-        self.bus.io_regs[0x10] = self.apu.read(0xFF10);
-        self.bus.io_regs[0x11] = self.apu.read(0xFF11);
-        self.bus.io_regs[0x12] = self.apu.read(0xFF12);
-        self.bus.io_regs[0x14] = self.apu.read(0xFF14);
-        // Channel 2
-        self.bus.io_regs[0x16] = self.apu.read(0xFF16);
-        self.bus.io_regs[0x17] = self.apu.read(0xFF17);
-        self.bus.io_regs[0x19] = self.apu.read(0xFF19);
-        // Channel 3
-        self.bus.io_regs[0x1A] = self.apu.read(0xFF1A);
-        self.bus.io_regs[0x1C] = self.apu.read(0xFF1C);
-        self.bus.io_regs[0x1E] = self.apu.read(0xFF1E);
-        // Channel 4
-        self.bus.io_regs[0x21] = self.apu.read(0xFF21);
-        self.bus.io_regs[0x22] = self.apu.read(0xFF22);
-        self.bus.io_regs[0x23] = self.apu.read(0xFF23);
-        // Master registers
-        self.bus.io_regs[0x24] = self.apu.read(0xFF24);
-        self.bus.io_regs[0x25] = self.apu.read(0xFF25);
+        // Expose status register readback without feeding it back as writes.
         self.bus.io_regs[0x26] = self.apu.read(0xFF26);
-        // Wave RAM (0xFF30-0xFF3F)
-        for i in 0..16 {
-            self.bus.io_regs[0x30 + i as usize] = self.apu.read(0xFF30 + i);
-        }
     }
 
     /// Sync LCD registers to Bus I/O area
@@ -349,9 +333,15 @@ impl Emulator {
 
     /// Tick all components by the given number of T-cycles
     fn tick_components(&mut self, cycles: u32) {
-        // Sync VRAM/OAM from Bus to PPU before ticking
-        self.ppu.vram.copy_from_slice(&self.bus.vram);
-        self.ppu.oam.copy_from_slice(&self.bus.oam);
+        // Sync VRAM/OAM lazily: only copy when Bus memory actually changed.
+        if self.bus.vram_dirty {
+            self.ppu.vram.copy_from_slice(&self.bus.vram);
+            self.bus.vram_dirty = false;
+        }
+        if self.bus.oam_dirty {
+            self.ppu.oam.copy_from_slice(&self.bus.oam);
+            self.bus.oam_dirty = false;
+        }
 
         for _ in 0..cycles {
             self.ctx.ticks += 1;
@@ -377,7 +367,9 @@ impl Emulator {
             // Tick DMA
             if let Some((src, dst)) = self.dma.tick() {
                 let value = self.bus.read(src);
-                self.bus.oam[(dst - 0xFE00) as usize] = value;
+                let oam_index = (dst - 0xFE00) as usize;
+                self.bus.oam[oam_index] = value;
+                self.ppu.oam[oam_index] = value;
             }
             
             // Update DMA active state
@@ -416,14 +408,13 @@ impl Emulator {
 
     /// Run the emulator for one frame
     pub fn run_frame(&mut self) {
-        let start_frame = self.ppu.current_frame;
-        while self.ppu.current_frame == start_frame && !self.ctx.die {
-            self.step();
+        const T_CYCLES_PER_FRAME: u64 = 70224;
+        let start_ticks = self.ctx.ticks;
+        while self.ctx.ticks.saturating_sub(start_ticks) < T_CYCLES_PER_FRAME && !self.ctx.die {
+            if !self.step() {
+                break;
+            }
         }
-        
-        // Debug: print frame info
-        println!("Frame {} complete, LY:{}, LCDC:{:02X}, ticks:{}", 
-            self.ppu.current_frame, self.lcd.ly, self.lcd.lcdc, self.ctx.ticks);
     }
 
     /// Pause the emulator
@@ -482,13 +473,19 @@ impl Emulator {
         println!("Starting emulation...");
         println!("Note: This is a headless run. Use with SDL2 UI for graphics.");
         
-        // Run for a limited number of frames for testing
+        // Run for a limited number of simulated frames for testing.
         let max_frames = 60;
-        while self.is_running() && self.current_frame() < max_frames {
+        let mut simulated_frames = 0;
+        while self.is_running() && simulated_frames < max_frames {
             self.run_frame();
+            simulated_frames += 1;
         }
         
-        println!("Emulation completed. Frames: {}", self.current_frame());
+        println!(
+            "Emulation completed. Simulated frames: {}, PPU frames: {}",
+            simulated_frames,
+            self.current_frame()
+        );
         Ok(())
     }
 }

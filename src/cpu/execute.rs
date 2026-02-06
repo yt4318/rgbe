@@ -127,10 +127,12 @@ impl Cpu {
     fn proc_ld<B: MemoryBus>(&mut self, bus: &mut B, inst: &Instruction) {
         if self.dest_is_mem {
             if Self::is_16bit_reg(inst.reg2) {
+                self.add_m_cycles(1);
                 bus.write16(self.mem_dest, self.fetched_data);
             } else {
                 bus.write(self.mem_dest, self.fetched_data as Byte);
             }
+            self.add_m_cycles(1);
             return;
         }
 
@@ -151,10 +153,15 @@ impl Cpu {
         } else {
             bus.write(self.mem_dest, self.regs.a);
         }
+        self.add_m_cycles(1);
     }
 
     fn proc_inc<B: MemoryBus>(&mut self, bus: &mut B, inst: &Instruction) {
         let mut val = self.read_reg(inst.reg1).wrapping_add(1);
+
+        if Self::is_16bit_reg(inst.reg1) {
+            self.add_m_cycles(1);
+        }
 
         if inst.reg1 == RegisterType::Hl && inst.mode == AddressingMode::MemoryRegisterOnly {
             val = (bus.read(self.regs.hl()) as Word).wrapping_add(1) & 0xFF;
@@ -176,6 +183,10 @@ impl Cpu {
 
     fn proc_dec<B: MemoryBus>(&mut self, bus: &mut B, inst: &Instruction) {
         let mut val = self.read_reg(inst.reg1).wrapping_sub(1);
+
+        if Self::is_16bit_reg(inst.reg1) {
+            self.add_m_cycles(1);
+        }
 
         if inst.reg1 == RegisterType::Hl && inst.mode == AddressingMode::MemoryRegisterOnly {
             val = (bus.read(self.regs.hl()) as Word).wrapping_sub(1) & 0xFF;
@@ -199,6 +210,10 @@ impl Cpu {
         let reg_val = self.read_reg(inst.reg1);
         let mut val = reg_val.wrapping_add(self.fetched_data);
         let is_16bit = Self::is_16bit_reg(inst.reg1);
+
+        if is_16bit {
+            self.add_m_cycles(1);
+        }
 
         if inst.reg1 == RegisterType::Sp {
             val = reg_val.wrapping_add(self.fetched_data as i8 as i16 as Word);
@@ -294,42 +309,48 @@ impl Cpu {
     fn proc_jr(&mut self, inst: &Instruction) {
         let rel = (self.fetched_data & 0xFF) as i8;
         let addr = self.regs.pc.wrapping_add(rel as i16 as Word);
-        if self.check_condition(inst.cond) {
-            self.regs.pc = addr;
-        }
+        self.jump_to_if(addr, inst.cond);
     }
 
     fn proc_jp(&mut self, inst: &Instruction) {
-        if self.check_condition(inst.cond) {
-            self.regs.pc = self.fetched_data;
-        }
+        self.jump_to_if(self.fetched_data, inst.cond);
     }
 
     fn proc_call<B: MemoryBus>(&mut self, bus: &mut B, inst: &Instruction) {
         if self.check_condition(inst.cond) {
+            self.add_m_cycles(2);
             self.stack_push16(bus, self.regs.pc);
             self.regs.pc = self.fetched_data;
+            self.add_m_cycles(1);
         }
     }
 
     fn proc_ret<B: MemoryBus>(&mut self, bus: &mut B, inst: &Instruction) {
+        if inst.cond != ConditionType::None {
+            self.add_m_cycles(1);
+        }
         if self.check_condition(inst.cond) {
             self.regs.pc = self.stack_pop16(bus);
+            self.add_m_cycles(3);
         }
     }
 
     fn proc_reti<B: MemoryBus>(&mut self, bus: &mut B) {
         self.ime = true;
         self.regs.pc = self.stack_pop16(bus);
+        self.add_m_cycles(3);
     }
 
     fn proc_rst<B: MemoryBus>(&mut self, bus: &mut B, inst: &Instruction) {
+        self.add_m_cycles(2);
         self.stack_push16(bus, self.regs.pc);
         self.regs.pc = inst.param as Word;
+        self.add_m_cycles(1);
     }
 
     fn proc_pop<B: MemoryBus>(&mut self, bus: &mut B, inst: &Instruction) {
         let val = self.stack_pop16(bus);
+        self.add_m_cycles(2);
         self.write_reg(inst.reg1, val);
         
         // AF special case: lower 4 bits of F are always 0
@@ -341,6 +362,7 @@ impl Cpu {
     fn proc_push<B: MemoryBus>(&mut self, bus: &mut B, inst: &Instruction) {
         let val = self.read_reg(inst.reg1);
         self.stack_push16(bus, val);
+        self.add_m_cycles(3);
     }
 
     fn proc_rlca(&mut self) {
@@ -447,6 +469,19 @@ impl Cpu {
         // Decode CB operation type from opcode
         let bit_op = (op >> 6) & 0b11;
 
+        // fetch_instruction + fetch_data already consumed 2 M-cycles for CB opcodes.
+        // Additional cycles:
+        // - register targets: +0
+        // - BIT b,(HL): +1
+        // - other (HL) operations: +2
+        if reg == RegisterType::Hl {
+            if bit_op == 1 {
+                self.add_m_cycles(1);
+            } else {
+                self.add_m_cycles(2);
+            }
+        }
+
         match bit_op {
             1 => {
                 // BIT
@@ -534,6 +569,13 @@ impl Cpu {
             bus.write(self.regs.hl(), value);
         } else {
             self.write_reg8(reg, value);
+        }
+    }
+
+    fn jump_to_if(&mut self, addr: Word, cond: ConditionType) {
+        if self.check_condition(cond) {
+            self.regs.pc = addr;
+            self.add_m_cycles(1);
         }
     }
 

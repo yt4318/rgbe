@@ -7,9 +7,11 @@ use sdl2::keyboard::Keycode;
 use sdl2::pixels::PixelFormatEnum;
 use sdl2::render::{Canvas, TextureCreator};
 use sdl2::video::{Window, WindowContext};
+use sdl2::audio::{AudioQueue, AudioSpecDesired};
 use sdl2::EventPump;
 use std::time::{Duration, Instant};
 
+use crate::apu::SAMPLE_RATE;
 use crate::emu::Emulator;
 use crate::gamepad::Button;
 
@@ -24,6 +26,7 @@ pub struct Ui {
     canvas: Canvas<Window>,
     event_pump: EventPump,
     texture_creator: TextureCreator<WindowContext>,
+    audio_queue: Option<AudioQueue<i16>>,
 }
 
 impl Ui {
@@ -42,12 +45,37 @@ impl Ui {
             .build()
             .map_err(|e| e.to_string())?;
 
+        // Prefer software renderer for compatibility/performance on systems where
+        // accelerated backends are unavailable or unstable.
         let canvas = window
             .into_canvas()
-            .accelerated()
-            .present_vsync()
+            .software()
             .build()
             .map_err(|e| e.to_string())?;
+
+        let audio_queue = match sdl_context.audio() {
+            Ok(audio_subsystem) => {
+                let desired_spec = AudioSpecDesired {
+                    freq: Some(SAMPLE_RATE as i32),
+                    channels: Some(2),
+                    samples: Some(1024),
+                };
+                match audio_subsystem.open_queue::<i16, _>(None, &desired_spec) {
+                    Ok(queue) => {
+                        queue.resume();
+                        Some(queue)
+                    }
+                    Err(err) => {
+                        eprintln!("Audio disabled: {}", err);
+                        None
+                    }
+                }
+            }
+            Err(err) => {
+                eprintln!("Audio subsystem unavailable: {}", err);
+                None
+            }
+        };
 
         let texture_creator = canvas.texture_creator();
         let event_pump = sdl_context.event_pump()?;
@@ -56,6 +84,7 @@ impl Ui {
             canvas,
             event_pump,
             texture_creator,
+            audio_queue,
         })
     }
 
@@ -105,6 +134,22 @@ impl Ui {
             while emulator.ctx.ticks - start_ticks < CYCLES_PER_FRAME as u64 {
                 if !emulator.step() {
                     break 'running;
+                }
+            }
+
+            // Queue generated audio samples.
+            let audio = emulator.get_audio_buffer();
+            if !audio.is_empty() {
+                if let Some(audio_queue) = self.audio_queue.as_ref() {
+                    // Keep latency bounded under heavy load.
+                    let max_queued_bytes = (SAMPLE_RATE / 5) * 4;
+                    if audio_queue.size() > max_queued_bytes {
+                        audio_queue.clear();
+                    }
+                    if let Err(err) = audio_queue.queue_audio(audio) {
+                        eprintln!("Audio output disabled: {}", err);
+                        self.audio_queue = None;
+                    }
                 }
             }
 
