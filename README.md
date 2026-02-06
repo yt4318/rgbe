@@ -1,4 +1,4 @@
-# rgbe - Game Boy Emulator in Rust
+# rgbe - Rust Game Boy Emulator
 
 A Game Boy emulator written in Rust.
 
@@ -69,3 +69,4 @@ cargo build --release
 ## License
 
 MIT
+
