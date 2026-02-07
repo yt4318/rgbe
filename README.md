@@ -66,7 +66,3 @@ cargo build --release
 | Backspace | Select |
 | Escape | Quit |
 
-## License
-
-MIT
-
